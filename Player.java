@@ -3,13 +3,15 @@
 import bc.*;
 
 import javax.xml.stream.FactoryConfigurationError;
+import javax.xml.stream.events.EndElement;
 import java.lang.reflect.Array;
 import java.util.*;
 
 public class Player {
 
     public static Random RAND = new Random();
-    public static ArrayList<MapLocation> knownEnemyLocations=new ArrayList<MapLocation>();
+    public static ArrayList<Unit> knownEnemies = new ArrayList<Unit>();
+
     public static int knownEnemyLocLimit = 30;
     public static float knownEnemyLocRefreshRate = 0.5f;
 
@@ -37,13 +39,15 @@ public class Player {
     public static float[][] currentResourceMap; //number indicate how much karbonite are there
     public static boolean[][] currentPassableMap; //1 is passable, 0 is not
 
+    public static Team myTeam;
+    public static Team enemyTeam;
 
     //MAIN FUNCTION
     public static void main(String[] args) {
         // Connect to the manager, starting the game
         gc = new GameController();
-        Team myteam = gc.team();
-        Team enemyTeam = getEnemyTeam(myteam);
+        myTeam = gc.team();
+        enemyTeam = getEnemyTeam(myTeam);
 
         // Direction is a normal java enum.
         gc.queueResearch(UnitType.Worker);
@@ -83,6 +87,7 @@ public class Player {
         while (true) {
             updateResourceMap();
             updatePassableMap();
+            updateEnemies();
 
             long current_round = gc.round();
             if(current_round%10==0){
@@ -133,11 +138,7 @@ public class Player {
                 switch (unit.unitType()) {
                     case Worker:
                         enemies = gc.senseNearbyUnitsByTeam(maploc, unit.visionRange(), enemyTeam);
-                        if (enemies.size() > 0) {
-                            updateKnownEnemyLocations(enemies.get(0).location().mapLocation());
-                        }
-
-                        VecUnit closeRangeAllyUnits = gc.senseNearbyUnitsByTeam(maploc, 2, myteam);
+                        VecUnit closeRangeAllyUnits = gc.senseNearbyUnitsByTeam(maploc, 2, myTeam);
                         boolean hasUnbuildOrUnrepairedFactoryNearby = false;
                         for (int j = 0; j < closeRangeAllyUnits.size(); j++) {
                             Unit other = closeRangeAllyUnits.get(j);
@@ -173,7 +174,7 @@ public class Player {
                         if (!hasUnbuildOrUnrepairedFactoryNearby) { //move only when there is no building to build nearby
                             if (gc.isMoveReady(uid)) {
                                 //first check if there's a building that needs to build nearby
-                                VecUnit nearbyAllyUnits = gc.senseNearbyUnitsByTeam(maploc, 8, myteam);
+                                VecUnit nearbyAllyUnits = gc.senseNearbyUnitsByTeam(maploc, 8, myTeam);
                                 for (int j = 0; j < nearbyAllyUnits.size(); j++) {
                                     Unit other = nearbyAllyUnits.get(j);
                                     if (other.unitType() == UnitType.Factory && other.health() < other.maxHealth()) {
@@ -222,10 +223,6 @@ public class Player {
                         break;
                     case Ranger:
                         enemies = gc.senseNearbyUnitsByTeam(maploc, unit.visionRange(), enemyTeam);
-                        if (enemies.size() > 0) {
-                            updateKnownEnemyLocations(enemies.get(0).location().mapLocation());
-                        }
-
                         if (gc.isAttackReady(uid)) {//if seen enemy and can attack, then attack.
                             Unit nearestEnemyToAttack = findNearestUnit_inRangerAttackRange(gc, unit, enemies);
                             if (nearestEnemyToAttack != null && gc.canAttack(uid, nearestEnemyToAttack.id())) {
@@ -273,8 +270,8 @@ public class Player {
                                 }
                             }
                         } else if (gc.isMoveReady(uid)) {//if no enemies in range and can move
-                            if (knownEnemyLocations.size() > 0) {//if we know where the enemy might be
-                                MapLocation nearestEnemyLocation = findNearestLocation(maploc, knownEnemyLocations);
+                            if (knownEnemies.size() > 0) {//if we know where the enemy might be
+                                MapLocation nearestEnemyLocation = findNearestEnemyFromKnownEnemies(maploc);
                                 Direction seekDir = getDirToTargetMapLocGreedy(gc, unit, nearestEnemyLocation);
                                 if (gc.canMove(uid, seekDir)) {
                                     gc.moveRobot(uid, seekDir);
@@ -289,12 +286,9 @@ public class Player {
                         break;
                     case Healer:
                         enemies = gc.senseNearbyUnitsByTeam(maploc, unit.visionRange(), enemyTeam);
-                        if (enemies.size() > 0) {
-                            updateKnownEnemyLocations(enemies.get(0).location().mapLocation());
-                        }
 
                         if (gc.isHealReady(uid)) {
-                            VecUnit friends = gc.senseNearbyUnitsByTeam(maploc, unit.attackRange(), myteam);
+                            VecUnit friends = gc.senseNearbyUnitsByTeam(maploc, unit.attackRange(), myTeam);
                             Unit friendToHeal = findFriendToHeal(gc, unit, friends);
                             if (gc.canHeal(uid, friendToHeal.id())) {
                                 gc.heal(uid, friendToHeal.id());
@@ -309,8 +303,8 @@ public class Player {
                                     gc.moveRobot(uid,moveDir);
                                 }
                             } else {//if no enemy in sight
-                                if (knownEnemyLocations.size() > 0) {//if we know where the enemy might be
-                                    MapLocation nearestEnemyLocation = findNearestLocation(maploc, knownEnemyLocations);
+                                if (knownEnemies.size() > 0) {//if we know where the enemy might be
+                                    MapLocation nearestEnemyLocation = findNearestEnemyFromKnownEnemies(maploc);
 
                                     float distance = maploc.distanceSquaredTo(nearestEnemyLocation);
                                     if(distance>unit.visionRange()+12){
@@ -425,6 +419,23 @@ public class Player {
         }
     }
 
+    public static void updateEnemies() {
+        //call this each round to update known enemies (their locations and everything else)
+        knownEnemies.clear();//first clear enemies from last round
+        for (int i = 0; i < currentMapAllMapLocs.size(); i++) {
+            MapLocation mapLoc = currentMapAllMapLocs.get(i);
+            int x = mapLoc.getX();
+            int y = mapLoc.getY();
+            if(gc.canSenseLocation(mapLoc) && gc.hasUnitAtLocation(mapLoc)) {
+                //if there is a unit at this location
+                Unit unit = gc.senseUnitAtLocation(mapLoc);
+                if (unit.team()==enemyTeam){
+                    knownEnemies.add(unit);
+                }
+            }
+        }
+    }
+
     public static void printPassableMapDEBUG(){
         //debug use only
         for (int y = currentPlanetHeight-1; y >= 0; y--) {
@@ -455,18 +466,6 @@ public class Player {
         return directions[i];
     }
 
-    public static void updateKnownEnemyLocations(MapLocation enemyMapLoc) {
-        // when a unit encountered an enemy, simply call this function!
-        if (knownEnemyLocations.size() < knownEnemyLocLimit) {
-            knownEnemyLocations.add(enemyMapLoc);
-            return;
-        }
-        if (Math.random() < knownEnemyLocRefreshRate) {
-            int indexToUse = RAND.nextInt(knownEnemyLocLimit);
-            knownEnemyLocations.set(indexToUse, enemyMapLoc);//replace old info with new
-        }
-        return;
-    }
 
     public static Direction getDirToTargetMapLocGreedy(GameController gc, Unit ourUnit, MapLocation targetLoc) {
         // the unit will try to move greedily to a direction approximately towards the target location.
@@ -514,12 +513,12 @@ public class Player {
         return Direction.Center;
     }
 
-    public static MapLocation findNearestLocation(MapLocation ourLoc, ArrayList<MapLocation> otherLocs) {
+    public static MapLocation findNearestEnemyFromKnownEnemies(MapLocation ourLoc){
         // given our maplocation and a list of locations, find the nearest location
         float minDistance = 99999999;
         MapLocation nearestLoc = ourLoc;
-        for (int i = 0; i < otherLocs.size(); i++) {
-            MapLocation otherLoc = otherLocs.get(i);
+        for (int i = 0; i < knownEnemies.size(); i++) {
+            MapLocation otherLoc = knownEnemies.get(i).location().mapLocation();
             float distance = ourLoc.distanceSquaredTo(otherLoc);
             if (distance < minDistance) {
                 minDistance = distance;
@@ -527,7 +526,9 @@ public class Player {
             }
         }
         return nearestLoc;
+
     }
+
 
     public static ArrayList<Integer> getShuffledIndexes(long size){
         ArrayList<Integer> toreturn = new ArrayList<Integer>();
