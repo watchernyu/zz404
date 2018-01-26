@@ -1,10 +1,11 @@
 // import the API.
 // See xxx for the javadocs.
 import bc.*;
-import java.util.Collections;
 
-import java.util.Random;
-import java.util.ArrayList;
+import javax.xml.stream.FactoryConfigurationError;
+import java.lang.reflect.Array;
+import java.util.*;
+
 public class Player {
 
     public static Random RAND = new Random();
@@ -12,23 +13,39 @@ public class Player {
     public static int knownEnemyLocLimit = 30;
     public static float knownEnemyLocRefreshRate = 0.5f;
 
-    public static int EARTH_START_STATE = 0;
-    public static int EATH_MIDDLE_STATE = 1;
+    public static final int PASSABLE = 1; //these are used for path finding
+    public static final int OCCUPIED = 0;
 
     public static Direction[] DIRECTIONS = Direction.values();
 
     public static boolean ENGAGE_OPTION = false; //the rangers will try to backaway from enemy if engage option is false
     public static float rangerSafeAdditionalDistance = 15; // when told not to engage, a ranger will keep a distance of (attackRange+rangerSafeAdditionalDistance)
 
+    public static PlanetMap earthMap;
+    public static PlanetMap marsMap;
+    public static Planet currentPlanet;
+    public static int currentPlanetWidth;
+    public static int currentPlanetHeight;
+    public static PlanetMap currentMap;
+    public static int[][] pathBias = {{-1,-1},{0,-1},{1,-1},{-1,0},{1,0},{-1,1},{0,1},{1,1}};
+
+    public static GameController gc;
+
+    public static ArrayList<MapLocation> currentMapAllMapLocs = new ArrayList<MapLocation>(); // used to store all the maplocations for a map, it's used in update real-time map
+    public static int[][] visitedMatrix;
+
+    public static float[][] currentResourceMap; //number indicate how much karbonite are there
+    public static boolean[][] currentPassableMap; //1 is passable, 0 is not
+
+
     //MAIN FUNCTION
     public static void main(String[] args) {
         // Connect to the manager, starting the game
-        GameController gc = new GameController();
+        gc = new GameController();
         Team myteam = gc.team();
         Team enemyTeam = getEnemyTeam(myteam);
 
         // Direction is a normal java enum.
-
         gc.queueResearch(UnitType.Worker);
         gc.queueResearch(UnitType.Ranger);
         gc.queueResearch(UnitType.Healer);
@@ -37,9 +54,36 @@ public class Player {
 
         int limit_factory = 3;
         int limit_worker = 12;
-        int earth_current_state = EARTH_START_STATE; //in the beginning, we use this state
+
+        earthMap = gc.startingMap(Planet.Earth);
+        marsMap = gc.startingMap(Planet.Mars);
+        currentPlanet = gc.planet();
+
+        if (gc.planet()==Planet.Earth){
+            currentMap = earthMap;
+        }else{
+            currentMap = marsMap;
+        }
+
+        VecUnit initialUnits = currentMap.getInitial_units();
+        for (int i = 0; i < initialUnits.size(); i++) {
+            Unit u = initialUnits.get(i);
+            System.out.println(u.team()+" "+u.location().mapLocation());
+        }
+
+        currentPlanetWidth = (int)currentMap.getWidth();
+        currentPlanetHeight = (int)currentMap.getHeight();
+
+        currentResourceMap = new float[currentPlanetWidth][currentPlanetHeight];
+        currentPassableMap = new boolean[currentPlanetWidth][currentPlanetHeight];
+        System.out.println("map size:"+ currentResourceMap.length+" "+ currentResourceMap[0].length);
+        getAllMapLocs();
+        initVisitedMatrix();
 
         while (true) {
+            updateResourceMap();
+            updatePassableMap();
+
             long current_round = gc.round();
             if(current_round%10==0){
                 ENGAGE_OPTION = true;
@@ -49,7 +93,7 @@ public class Player {
             }
 
             // for each round
-            System.out.println("Current round: "+gc.round());
+            System.out.println(gc.round()+" t: "+gc.getTimeLeftMs());
             int n_worker = 0;
             int n_factory = 0;
             int n_ranger = 0;
@@ -296,6 +340,115 @@ public class Player {
         }
     }//END OF MAIN FUNCTION
 
+    public static void getAllMapLocs(){
+        //call this at the beginning of the game, to get all map locations for later usage.
+        for (int i = 0; i < currentPlanetWidth; i++) {
+            for (int j = 0; j < currentPlanetHeight; j++) {
+                MapLocation mapLoc = new MapLocation(currentPlanet,i,j);
+                currentMapAllMapLocs.add(mapLoc);
+            }
+        }
+    }
+
+    public static Direction BFSToMapLocation(MapLocation ourLoc,MapLocation targetLoc){
+        //given our unit's location, try to find a route with A* to the target location
+        //need to clear visitedmatrix here every time you call this #TODO
+
+        int[] startloc = {ourLoc.getX(),ourLoc.getY()};
+        int[] targetloc = {targetLoc.getX(),targetLoc.getY()};
+        ArrayDeque<int[]> frontier = new ArrayDeque<int[]>();
+        frontier.add(startloc);
+
+        boolean foundPath = false;
+        while(!frontier.isEmpty()){
+
+            int[] loc = frontier.poll();
+            if (locCompare(loc,targetloc)){
+                //means found target
+                foundPath = true;
+                break;
+            }
+
+            ArrayList<int[]> neighbors = getNeighbors(loc);
+            visitedMatrix[loc[0]][loc[1]] = 0;//0 means unvisited, 1 means visited
+            frontier.addAll(neighbors);
+        }
+
+        if(foundPath){
+            //return the next direction
+            return Direction.Center; //TODO
+        }else {
+            return Direction.Center;
+        }
+    }
+
+    public static boolean locCompare(int[] loc1,int[] loc2){
+        //used in path finding
+        return (loc1[0]==loc2[0] && loc1[1] == loc2[1]);
+    }
+
+    public static ArrayList<int[]> getNeighbors(int[] loc){
+        int x = loc[0];
+        int y = loc[1];
+        ArrayList<int[]> neighbors = new ArrayList<int[]>();
+        for (int i = 0; i < 8; i++) {
+            int dx = pathBias[i][0];
+            int dy = pathBias[i][1];
+            int newx = x+dx;
+            int newy = y+dx;
+            if(newx>=0 && newy>=0 && newx<currentPlanetWidth && newy <currentPlanetHeight && visitedMatrix[newx][newy]==1){
+                int[] pair = {newx,newy};
+                neighbors.add(pair);
+            }
+        }
+        return neighbors;
+    }
+
+    public static void initVisitedMatrix(){
+        //call this every round to update passable terrains (if a maploc has a unit then it's seen as not passable.)
+        visitedMatrix = new int[currentPlanetWidth][currentPlanetHeight];
+    }
+
+
+    public static void updatePassableMap(){
+        //call this every round to update passable terrains (if a maploc has a unit then it's seen as not passable.)
+        for (int i = 0; i < currentMapAllMapLocs.size(); i++) {
+            MapLocation mapLoc = currentMapAllMapLocs.get(i);
+            int x = mapLoc.getX();
+            int y = mapLoc.getY();
+            if( currentMap.isPassableTerrainAt(mapLoc)==0 || (gc.canSenseLocation(mapLoc) && gc.hasUnitAtLocation(mapLoc))){
+                //if there is a obstacle or a unit there, then this location is not passable.
+                currentPassableMap[x][y] = false;
+            }else{
+                currentPassableMap[x][y] = true;
+            }
+        }
+    }
+
+    public static void printPassableMapDEBUG(){
+        //debug use only
+        for (int y = currentPlanetHeight-1; y >= 0; y--) {
+            String s = "";
+            for (int x = 0; x < currentPlanetWidth; x++) {
+                s+=(currentPassableMap[x][y]+" ");
+            }
+            System.out.println(s);
+        }
+    }
+
+    public static void updateResourceMap(){
+        for (int i = 0; i < currentMapAllMapLocs.size(); i++) {
+            MapLocation mapLoc = currentMapAllMapLocs.get(i);
+            if (gc.canSenseLocation(mapLoc)){
+                //if this location is in sight, then update its resource location
+                int x = mapLoc.getX();
+                int y = mapLoc.getY();
+                currentResourceMap[x][y] = gc.karboniteAt(mapLoc);
+            }
+        }
+    }
+
+
     public static Direction getRandomDirection(){
         Direction[] directions = Direction.values();
         int i = RAND.nextInt(directions.length);
@@ -493,6 +646,12 @@ public class Player {
             }
         }
         return false; //means didn't replicate
+    }
+
+    public static void initResourceMap(float[][] resourceMap){
+        for (int i = 0; i < resourceMap.length; i++) {
+
+        }
     }
 
 }
