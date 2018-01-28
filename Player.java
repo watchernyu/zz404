@@ -38,6 +38,7 @@ public class Player {
 
     public static float[][] currentResourceMap; //number indicate how much karbonite are there
     public static boolean[][] currentPassableMap; //1 is passable, 0 is not
+    public static int maximumAvailableGrid;
 
     public static Team myTeam;
     public static Team enemyTeam;
@@ -58,12 +59,14 @@ public class Player {
 
         int limit_factory = 3;
         int limit_worker = 12;
-
+        int limit_rocket = 2;
+        // Due to huge unit loss on Earth if launch a rocket, rocket cannot be widely built.
+        
         earthMap = gc.startingMap(Planet.Earth);
         marsMap = gc.startingMap(Planet.Mars);
         currentPlanet = gc.planet();
 
-        if (gc.planet()==Planet.Earth){
+        if (currentPlanet==Planet.Earth){
             currentMap = earthMap;
         }else{
             currentMap = marsMap;
@@ -83,6 +86,15 @@ public class Player {
         System.out.println("map size:"+ currentResourceMap.length+" "+ currentResourceMap[0].length);
         getAllMapLocs();
         initVisitedMatrix();
+        updateResourceMap();
+        updatePassableMap();
+
+        int launch_start_at_round = 200;
+        // Do not launch in first 200 rounds
+        int launch_start_at_armysize = Math.min(20, maximumAvailableGrid / 5);
+        // Only when armysize is greater than 20, we build rocket
+        int mass_produce_at_round = 600;
+        // Repidly move army to Mars
 
         while (true) {
             updateResourceMap();
@@ -170,6 +182,12 @@ public class Player {
                                 n_worker++;
                             }
                         }
+
+                        // Let workers to build rocket
+                        /*
+                            TODO: work builds;
+                        */
+
 
                         if (!hasUnbuildOrUnrepairedFactoryNearby) { //move only when there is no building to build nearby
                             if (gc.isMoveReady(uid)) {
@@ -407,6 +425,7 @@ public class Player {
     public static void updatePassableMap(){
         //call this every round to update passable terrains (if a maploc has a unit then it's seen as not passable.)
         for (int i = 0; i < currentMapAllMapLocs.size(); i++) {
+            maximumAvailableGrid = 0;
             MapLocation mapLoc = currentMapAllMapLocs.get(i);
             int x = mapLoc.getX();
             int y = mapLoc.getY();
@@ -415,6 +434,7 @@ public class Player {
                 currentPassableMap[x][y] = false;
             }else{
                 currentPassableMap[x][y] = true;
+                maximumAvailableGrid ++;
             }
         }
     }
