@@ -10,6 +10,7 @@ import java.util.*;
 public class Player {
 
     public static Random RAND = new Random();
+    public static HashMap garrisonSize = new HashMap();
     public static ArrayList<Unit> knownEnemies = new ArrayList<Unit>();
 
     public static int knownEnemyLocLimit = 30;
@@ -89,11 +90,11 @@ public class Player {
         updateResourceMap();
         updatePassableMap();
 
-        int launch_start_at_round = 200;
+        long launch_start_at_round = 200;
         // Do not launch in first 200 rounds
         int launch_start_at_armysize = Math.min(20, maximumAvailableGrid / 5);
         // Only when armysize is greater than 20, we build rocket
-        int mass_produce_at_round = 600;
+        long mass_produce_at_round = 680;
         // Repidly move army to Mars
 
         while (true) {
@@ -115,6 +116,7 @@ public class Player {
             int n_factory = 0;
             int n_ranger = 0;
             int n_healer = 0;
+            int n_rocket = 0;
 
             // VecUnit is a class that you can think of as similar to ArrayList<Unit>, but immutable.
             // first get to know how many of each unit we have
@@ -133,6 +135,9 @@ public class Player {
                         break;
                     case Healer:
                         n_healer++;
+                        break;
+                    case Rocket:
+                        n_rocket++;
                         break;
                 }
             }
@@ -184,9 +189,15 @@ public class Player {
                         }
 
                         // Let workers to build rocket
-                        /*
-                            TODO: work builds;
-                        */
+                        boolean readyToBuildRocket = ((current_round > launch_start_at_round && (n_ranger + n_healer) > launch_start_at_armysize && n_rocket < limit_rocket)
+                                               || current_round > mass_produce_at_round);
+                        // Test whether to build rocket on army aspect
+                        if (readyToBuildRocket) { 
+                            boolean hasBuiltRocket = blueprintRocketNearby(gc, uid);
+                            if (hasBuiltRocket) {
+                                n_rocket++;
+                            }
+                        }
 
 
                         if (!hasUnbuildOrUnrepairedFactoryNearby) { //move only when there is no building to build nearby
@@ -239,6 +250,62 @@ public class Player {
                         }
 
                         break;
+                    case Rocket:
+                        int senseSize = 20; // n*n, sense nearby units of rocket
+                        int nearByEnemy  = null,
+                            nearByAllies = null;
+                        nearByEnemy  = findUnitCountWithInRange(20, enemyTeam);
+                        nearByAllies = findUnitCountWithInRange(20, myTeam);
+                        if (!garrisonSize.containsKey(uid)) garrisonSize.put(uid, 0);
+                        
+
+                        if (nearByEnemy.size() > nearByAllies.size()) {
+                            // if nearby enemy is greater than mine
+                            // if enemy size is larger than allies in facility plus nearby allies and there are some units in rocket, directly launch.
+                            // otherwise, unload allies to fight with enemy.
+                            if (nearByEnemy.size() > nearByAllies.size() + garrisonSize.get(uid)) {
+                                if (garrisonSize.get(uid)) {
+                                    if (gc.canLaunchRocket(unit, dir)) {
+                                        gc.launchRocket(unit, dir);
+                                    }
+                                }
+                            } else {
+                                for (int j = 0; j < DIRECTIONS.length; j++) {
+                                    d = DIRECTIONS[j];
+                                    if (gc.canUnload(uid, d)) {
+                                        garrisonSize.put(uid, (int) garrisonSize.get(uid) - 1);
+                                        gc.unload(uid, d);
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            // no enemy nearby so that pick allies to load
+                            Unit nearestAlly = findNearestUnit(maploc, nearByAllies);
+                            if (gc.canLoad(uid, nearestAlly.id)) {
+                                switch (nearestAlly.unitType()){
+                                    case Ranger:
+                                        n_ranger--;
+                                        break;
+                                    case Worker:
+                                        n_worker--;
+                                        break;
+                                    case Healer:
+                                        n_healer--;
+                                        break;
+                                }
+                                gc.load(uid, nearestAlly.id);
+                                garrisonSize.put(uid, (int) garrisonSize.get(uid) + 1);
+                            }
+                            if (garrisonSize.get(uid) > 5) {
+                                if (gc.canLaunchRocket(unit, dir)) {
+                                    gc.launchRocket(unit, dir);
+                                }
+                            } 
+                        }
+                        
+                        
+                        
                     case Ranger:
                         enemies = gc.senseNearbyUnitsByTeam(maploc, unit.visionRange(), enemyTeam);
                         if (gc.isAttackReady(uid)) {//if seen enemy and can attack, then attack.
@@ -589,6 +656,28 @@ public class Player {
         return nearestUnit;
     }
 
+    public static ArrayList<Unit> findUnitCountWithInRange(int range, Team team) {
+        ArrayList<Unit> targets = new ArrayList<Unit>();
+        if (team == enemyTeam) {
+            for (int i = 0; i < knownEnemies.size(); i++) {
+                MapLocation otherLoc = knownEnemies.get(i).location().mapLocation();
+                float distance = ourLoc.distanceSquaredTo(otherLoc);
+                if (distance <= range) {
+                    targets.add(knownEnemies.get(i));
+                }
+            }
+        } else if (team == myTeam) {
+            for (int i = 0; i < units.size(); i++) {
+                MapLocation otherLoc = units.get(i).location().mapLocation();
+                float distance = ourLoc.distanceSquaredTo(otherLoc);
+                if (distance <= range) {
+                    targets.add(units.get(i));
+                }
+            }
+        }
+        return targets;
+    }
+
 
     public static Team getEnemyTeam(Team myteam){
         Team enemyTeam;
@@ -639,6 +728,18 @@ public class Player {
             d = DIRECTIONS[j];
             if (gc.canBlueprint(uid,UnitType.Factory,d)){
                 gc.blueprint(uid,UnitType.Factory,d);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean blueprintRocketNearby(GameController gc, int uid){
+        Direction d = Direction.Center;
+        for (int j = 0; j < DIRECTIONS.length; j++) {
+            d = DIRECTIONS[j];
+            if (gc.canBlueprint(uid,UnitType.Rocket,d)){
+                gc.blueprint(uid,UnitType.Rocket,d);
                 return true;
             }
         }
